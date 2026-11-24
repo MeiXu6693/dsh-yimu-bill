@@ -4,14 +4,23 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        node: [20, 22]
+        node: [22, 24]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -20,3 +29,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      - name: Verify package contents
+        run: |
+          npm pack --dry-run --json > /tmp/pack.json
+          node -e "const p=require('/tmp/pack.json')[0];const f=new Set(p.files.map(x=>x.path));for(const k of ['plugin.mjs','lib/constants.mjs','lib/qr.mjs','lib/yimu-api.mjs','lib/login-controller.mjs','tools.mjs','mcp-host.mjs','client.js','cordis.patch.yml']){if(!f.has(k))throw new Error('missing '+k)}"

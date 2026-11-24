@@ -15,15 +15,15 @@
 
 import path from 'node:path'
 import { DEFAULT_SERVER_PATH, registerMcpTools, startMcpHost, truncate } from './mcp-host.mjs'
+import { TOKEN_REF } from './lib/constants.mjs'
+
+export { TOKEN_REF }
 
 /** Cordis 插件名。 */
 export const name = 'yimu-bill-tools'
 
 /** 依赖 host 服务。 */
 export const inject = ['tools', 'credentials']
-
-/** 凭据引用名。 */
-export const TOKEN_REF = 'YIMU_TOKEN'
 
 /** 默认配置。 */
 const DEFAULTS = Object.freeze({
@@ -58,7 +58,7 @@ function renderStatus(value) {
  * @param {object} [rawConfig] 插件行配置。
  * @returns {Promise<void>} MCP 就绪或达到等待上限后返回；失败不会 reject。
  */
-export function apply(ctx, rawConfig = {}) {
+export async function apply(ctx, rawConfig = {}) {
   const config = { ...DEFAULTS, ...rawConfig }
   const serverPath = String(config.serverPath ?? '').trim() || DEFAULT_SERVER_PATH
   const serverCwd = String(config.serverCwd ?? '').trim() || path.dirname(path.dirname(serverPath))
@@ -166,9 +166,14 @@ export function apply(ctx, rawConfig = {}) {
 
   const ready = start()
   // 慢/挂起的 MCP 不阻塞会话创建：最多等 readyWaitMs，之后在后台完成注册。
+  let capTimer
   const cap = new Promise((resolve) => {
-    const timer = setTimeout(resolve, config.readyWaitMs)
-    if (typeof timer.unref === 'function') timer.unref()
+    capTimer = setTimeout(resolve, config.readyWaitMs)
+    if (typeof capTimer.unref === 'function') capTimer.unref()
   })
-  return Promise.race([ready.then(() => undefined), cap])
+  try {
+    return await Promise.race([ready.then(() => undefined), cap])
+  } finally {
+    clearTimeout(capTimer)
+  }
 }

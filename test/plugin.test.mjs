@@ -3,7 +3,17 @@ import assert from 'node:assert/strict'
 import jsQR from 'jsqr'
 import * as plugin from '../plugin.mjs'
 import * as tools from '../tools.mjs'
-import { prefixedToolName, registerMcpTools, sanitizeToolSchema, textOfToolResult } from '../mcp-host.mjs'
+import * as qr from '../lib/qr.mjs'
+import { createLoginController, HttpError } from '../lib/login-controller.mjs'
+import { TOKEN_REF } from '../lib/constants.mjs'
+import { jwtAudience, pollScanLogin, startScanLogin } from '../lib/yimu-api.mjs'
+import {
+  DEFAULT_SERVER_PATH,
+  prefixedToolName,
+  registerMcpTools,
+  sanitizeToolSchema,
+  textOfToolResult,
+} from '../mcp-host.mjs'
 
 /** 最小凭据服务桩。 */
 function fakeCredentials(initial = {}) {
@@ -87,7 +97,7 @@ function harness(options = {}) {
     start: () => Promise.resolve('session-1'),
     poll: () => Promise.resolve({ state: 'pending' }),
   }
-  const controller = plugin.createLoginController({
+  const controller = createLoginController({
     credentials,
     loginApi,
     probe: options.probe ?? (() => Promise.resolve({ tools: 11, sample: 'ok', elapsedMs: 12 })),
@@ -104,23 +114,16 @@ test('模块元信息', () => {
   assert.deepEqual(tools.inject, ['tools', 'credentials'])
 })
 
-test('二维码文本能被 jsQR 解回原内容', () => {
+test('二维码矩阵能被 jsQR 解回原内容', () => {
   const payload = 'login:0123456789abcdef0123456789abcdef'
-  const text = plugin.renderQrText(payload)
-  const lines = text.split('\n')
-  const rows = lines.length * 2
-  const cols = lines[0].length
+  const { size, rows } = qr.qrMatrix(payload, 4)
   const scale = 6
-  const width = cols * scale
-  const height = rows * scale
+  const width = size * scale
+  const height = size * scale
   const pixels = new Uint8ClampedArray(width * height * 4).fill(255)
-  const dark = (row, col) => {
-    const ch = lines[Math.floor(row / 2)][col]
-    return row % 2 === 0 ? ch === '█' || ch === '▀' : ch === '█' || ch === '▄'
-  }
-  for (let row = 0; row < rows; row += 1) {
-    for (let col = 0; col < cols; col += 1) {
-      if (!dark(row, col)) continue
+  for (let row = 0; row < size; row += 1) {
+    for (let col = 0; col < size; col += 1) {
+      if (!rows[row][col]) continue
       for (let y = 0; y < scale; y += 1) {
         for (let x = 0; x < scale; x += 1) {
           const index = ((row * scale + y) * width + (col * scale + x)) * 4
@@ -137,12 +140,54 @@ test('二维码文本能被 jsQR 解回原内容', () => {
 })
 
 test('二维码 SVG / data URL 结构正确', () => {
-  const svg = plugin.renderQrSvg('login:abc')
+  const svg = qr.renderQrSvg('login:abc')
   assert.match(svg, /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"/)
-  assert.match(svg, /<rect /)
-  const url = plugin.qrDataUrl('login:abc')
+  assert.match(svg, /<path /)
+  const url = qr.qrDataUrl('login:abc')
   assert.match(url, /^data:image\/svg\+xml;base64,/)
   assert.match(Buffer.from(url.split(',')[1], 'base64').toString('utf8'), /^<svg /)
+})
+
+test('官方扫码接口：会话创建与状态信封', async () => {
+  const start = async () => ({ ok: true, status: 200, json: async () => ({ result: 'session-9' }) })
+  assert.equal(await startScanLogin(start), 'session-9')
+  await assert.rejects(
+    startScanLogin(async () => ({ ok: true, status: 200, json: async () => ({}) })),
+    /扫码会话创建失败/,
+  )
+  await assert.rejects(
+    startScanLogin(async () => ({ ok: false, status: 503, json: async () => ({}) })),
+    /HTTP 503/,
+  )
+
+  const ok = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ code: 0, token: 'jwt', result: { id: 7, email: 'a@b.c' } }),
+  })
+  assert.deepEqual(await pollScanLogin('s', ok), {
+    state: 'ok',
+    jwt: 'jwt',
+    userId: '7',
+    user: { id: 7, email: 'a@b.c' },
+  })
+  const pending = async () => ({ ok: true, status: 200, json: async () => ({ code: 1, msg: 'no data' }) })
+  assert.deepEqual(await pollScanLogin('s', pending), { state: 'pending' })
+  const odd = async () => ({ ok: true, status: 200, json: async () => ({ code: 2, msg: 'x' }) })
+  await assert.rejects(pollScanLogin('s', odd), /code=2/)
+})
+
+test('官方扫码接口：JWT aud 解析', () => {
+  assert.equal(jwtAudience(fakeJwt('user-1')), 'user-1')
+  assert.equal(jwtAudience('bad'), '')
+  assert.equal(jwtAudience(undefined), '')
+})
+
+test('包自引用导出与默认 MCP 入口', async () => {
+  const exported = await import('dsh-yimu-bill/tools')
+  assert.equal(exported.name, 'yimu-bill-tools')
+  assert.equal(typeof exported.apply, 'function')
+  assert.match(DEFAULT_SERVER_PATH, /yimu-bill-cloud-mcp\/src\/index\.js$/)
 })
 
 test('控制器：未登录状态', async () => {
@@ -165,7 +210,7 @@ test('控制器：扫码开始 → 轮询成功写凭据', async () => {
 
   const polled = await controller.pollLogin('session-1')
   assert.deepEqual(polled, { state: 'ok', userId: 'user-1', email: 'a@b.c' })
-  assert.deepEqual(credentials.calls.set, [[plugin.TOKEN_REF, jwt]])
+  assert.deepEqual(credentials.calls.set, [[TOKEN_REF, jwt]])
   assert.equal(controller.sessions.size, 0)
   assert.equal((await controller.status()).configured, true)
 })
@@ -196,7 +241,7 @@ test('控制器：退出登录清凭据与在途会话', async () => {
   const { controller, credentials } = harness({ credentials: { configured: true, token: 't' } })
   await controller.startLogin()
   assert.deepEqual(await controller.logout(), {})
-  assert.deepEqual(credentials.calls.unset, [plugin.TOKEN_REF])
+  assert.deepEqual(credentials.calls.unset, [TOKEN_REF])
   assert.equal(controller.sessions.size, 0)
 })
 
@@ -401,7 +446,7 @@ test('控制半 handler：路由、方法、JSON 体与错误映射', async () =
   const failing = plugin.createHandler({
     ...controller,
     status: async () => {
-      throw new plugin.HttpError(418, '我是茶壶')
+      throw new HttpError(418, '我是茶壶')
     },
   })
   const failingRes = fakeRes()

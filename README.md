@@ -121,7 +121,8 @@ DSH 设置 → **一木记账** → 扫码登录 → 用一木记账 App【首�
 - 想把工具加到别的模式：在 `cordis.patch.yml` 里覆盖该 `preset-*` 行的 `config.plugins`，追加
   `- id: yimu-bill-tools` / `name: dsh-yimu-bill/tools`。参考 [`preset.example.yml`](preset.example.yml)。
   注意这会在用户补丁里写入该模式的完整配置覆写，DSH 升级标准模式时不会自动同步。
-- 想改登录逻辑：`plugin.mjs` 的 `createLoginController` 与 `apply` 是入口；HTTP 契约见文件头注释。
+- 想改登录逻辑：`lib/login-controller.mjs` 是会话/限频入口，`lib/yimu-api.mjs` 是官方接口唯一入口；
+  `plugin.mjs` 只负责 HTTP 路由与装配。
 
 ## 安全与边界
 
@@ -172,8 +173,33 @@ DSH 设置 → **一木记账** → 扫码登录 → 用一木记账 App【首�
 
 ```bash
 npm install
-npm test        # 二维码回环 + 控制器 + schema 清洗 + 工具映射 + 路由
+npm test        # 二维码矩阵解码 + 接口契约 + 控制器 + schema 清洗 + 工具映射 + 路由
 ```
+
+代码结构：
+
+| 文件 | 职责 |
+|---|---|
+| `plugin.mjs` | DSH 入口：`apply` + `/api/yimu-bill/*` 路由与错误映射 |
+| `lib/yimu-api.mjs` | 官方扫码接口唯一入口；接口变化只改这里 |
+| `lib/login-controller.mjs` | 扫码会话、限频、凭据写入、测试连接 |
+| `lib/qr.mjs` | 二维码矩阵 / SVG / data URL |
+| `lib/constants.mjs` | `TOKEN_REF` 等共享常量 |
+| `tools.mjs` | 记账模式工具半（私有托管 MCP） |
+| `mcp-host.mjs` | MCP 适配：schema 清洗、工具映射、探测 |
+| `client.js` | 设置页静态客户端 bundle |
+
+官方接口来自一木网页端，不是公开契约；若上游调整，只改 `lib/yimu-api.mjs`，并用
+`test/plugin.test.mjs` 里的 fake fetch 契约测试固定信封解析。
+
+## 发布
+
+- 版本号同步：`package.json` 与 `package-lock.json`；服务端版本已改为运行时读取 `package.json`。
+- 打 tag 并推送：`git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z`。
+- tag 触发 [`.github/workflows/release.yml`](.github/workflows/release.yml)：测试 → 版本校验 →
+  创建 GitHub Release（优先 `release-notes/<tag>.md`）；已在 Actions 中幂等处理重复 release。
+- 可选 npm：仓库 Secrets 配置 `NPM_TOKEN` 后 `npm publish` 自动执行；未配置则跳过，只发 GitHub Release。
+- CI 的 `npm pack --dry-run` 会校验 `files` 白名单，防止漏发 `lib/` 或客户端文件。
 
 ## License
 

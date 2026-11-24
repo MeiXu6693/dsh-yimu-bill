@@ -12,12 +12,16 @@
  * @module dsh-yimu-bill/mcp-host
  */
 
+import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 /** 默认 MCP 仓库入口：与本插件仓库并列的 yimu-bill-cloud-mcp。 */
 export const DEFAULT_SERVER_PATH = fileURLToPath(new URL('../yimu-bill-cloud-mcp/src/index.js', import.meta.url))
+
+/** 插件版本：MCP Client 握手用，和 package.json 保持单一来源。 */
+const VERSION = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version
 
 /** DSH 工具 schema 支持的约束关键字（其余递归剔除）。 */
 const CONSTRAINT_KEYS = new Set(['type', 'required', 'enum', 'const', 'additionalProperties'])
@@ -161,7 +165,7 @@ export async function startMcpHost({ serverPath = DEFAULT_SERVER_PATH, serverCwd
     while (stderrLines.length > 40) stderrLines.shift()
   })
 
-  const client = new Client({ name: 'dsh-yimu-bill', version: '0.2.0' })
+  const client = new Client({ name: 'dsh-yimu-bill', version: VERSION })
   try {
     await withTimeout(client.connect(transport), timeoutMs, '连接一木 MCP 超时')
     const listed = await withTimeout(client.listTools(), timeoutMs, '读取一木 MCP 工具清单超时')
