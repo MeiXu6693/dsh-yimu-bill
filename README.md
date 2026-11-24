@@ -185,7 +185,8 @@ npm test        # 二维码矩阵解码 + 接口契约 + 控制器 + schema 清�
 - 打 tag 并推送：`git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z`。
 - tag 触发 [`.github/workflows/release.yml`](.github/workflows/release.yml)：测试 → 版本校验 →
   创建 GitHub Release（优先 `release-notes/<tag>.md`）；已在 Actions 中幂等处理重复 release。
-- 可选 npm：仓库 Secrets 配置 `NPM_TOKEN` 后 `npm publish` 自动执行；未配置则跳过，只发 GitHub Release。
+- 可选 npm：仓库 Secrets 配置 `NPM_TOKEN`（stage-only 即可）后，workflow 执行 `npm stage publish`；未配置则跳过。
+  staged 版本需维护者在 npm 上用 2FA 批准后才公开（本版已发布 `dsh-yimu-bill@0.2.1`）。
 - CI 的 `npm pack --dry-run` 会校验 `files` 白名单，防止漏发 `lib/` 或客户端文件。
 
 ## License
