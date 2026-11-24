@@ -152,6 +152,10 @@ DSH 设置 → **一木记账** → 扫码登录 → 用一木记账 App【首�
 - 一木记账网页端的「退出登录」是纯前端行为（清 `localStorage` 后刷新），不会调用服务端注销接口。
   我们实测了常见注销路径（`/api/user/logout`、`/api/logout`、`/api/auth/logout`、`/api/token/revoke` …），
   全部 404；网页端没有「让 token 失效」的 API。
+- **Playwright 实测（2026-11-24）**：用真实 token 进入网页端（仅对 `getUserInfoById` 做了本地 mock 以进入界面，
+  其余请求走真实接口），点击界面上的「退出登录」，只触发页面刷新与静态资源加载，**没有任何 `/api/` 请求**；
+  退出后再用同一个 token 调 `/api/bill/getBillCount` 仍返回 `200 {"code":0,...}`。即网页端退出只清
+  浏览器本地状态，服务端 token 完全不受影响。
 - 本插件的「退出登录」会删除 DSH 凭据并关闭 MCP 子进程，但**服务端 token 仍然有效**；
   重新扫码也不保证旧 token 失效。若 token 泄露，请修改一木记账账号凭据或联系官方支持，
   并检查 DSH 的访问范围。
