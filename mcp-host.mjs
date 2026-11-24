@@ -17,8 +17,18 @@ import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-/** 默认 MCP 仓库入口：与本插件仓库并列的 yimu-bill-cloud-mcp。 */
-export const DEFAULT_SERVER_PATH = fileURLToPath(new URL('../yimu-bill-cloud-mcp/src/index.js', import.meta.url))
+const requireFromPlugin = createRequire(import.meta.url)
+
+/** 默认 MCP 入口：优先 npm 依赖；开发仓库里回退到相邻的 yimu-bill-cloud-mcp。 */
+function resolveDefaultServerPath() {
+  try {
+    return requireFromPlugin.resolve('yimu-bill-cloud-mcp/src/index.js')
+  } catch {
+    return fileURLToPath(new URL('../yimu-bill-cloud-mcp/src/index.js', import.meta.url))
+  }
+}
+
+export const DEFAULT_SERVER_PATH = resolveDefaultServerPath()
 
 /** 插件版本：MCP Client 握手用，和 package.json 保持单一来源。 */
 const VERSION = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version

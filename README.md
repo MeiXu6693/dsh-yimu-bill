@@ -34,47 +34,34 @@ DSH 设置页「一木记账」(client.js)
 ```
 
 - 工具注册使用 Cordis 的「调用方作用域」语义：在 preset revision 内注册的工具，只对被绑定到该模式的会话可见。
-- MCP SDK 不随插件发布：从 MCP 仓库自己的 `node_modules` 解析（`@modelcontextprotocol/sdk`），插件保持零 `@deepseek-ai` 依赖。
+- MCP server 由 npm 依赖 `yimu-bill-cloud-mcp` 提供；MCP SDK 从该依赖解析，插件不直接依赖 `@deepseek-ai` 包。
 
 ## 安装
 
-### 1. 准备 MCP 仓库
+要求 DSH 0.2.x（web profile）。**不需要克隆仓库，也不需要编译**：插件和 MCP 都以 npm 包发布，
+MCP 作为 `dsh-yimu-bill` 的依赖自动安装。
+
+### 1. 安装插件
+
+推荐在 DSH Web 的「设置 → 插件」里安装/启用 `dsh-yimu-bill`；或命令行：
 
 ```bash
-git clone https://github.com/MeiXu6693/yimu-bill-cloud-mcp.git
-cd yimu-bill-cloud-mcp && npm install && npm test
+dsh plugin --profile web add dsh-yimu-bill
 ```
 
-### 2. 安装本插件到 DSH profile
+`dsh plugin add` 会把包装进 profile，并因为插件声明了 `dsh.bundle` 自动加入
+`dsh.profile.bundles`。安装/升级后需要重启一次 DSH：浏览器端 client bundle 在进程启动时扫描
+（新增包的首次安装不会自动进入运行中的 client 图）。重启后刷新页面，设置里出现「一木记账」。
 
-要求 DSH 0.2.x（web profile）。下面以 `/data/dsh/profiles/web` 为例：
+> 不需要单独 clone/安装 `yimu-bill-cloud-mcp`，也不需要 `pnpm install` 手动构建；
+> 插件依赖会带下 MCP 及其 SDK。
 
-```bash
-# 1) 让 profile 能按包名解析插件（bundle + client 双半都依赖这一步）
-ln -s /path/to/dsh-yimu-bill /data/dsh/profiles/web/node_modules/dsh-yimu-bill
-
-# 2) profile/package.json
-#    dependencies 加： "dsh-yimu-bill": "link:/path/to/dsh-yimu-bill"
-#    dsh.profile.bundles 追加： "dsh-yimu-bill"
-
-# 3) 确保 profile/cordis.patch.yml 里没有旧的 yimu-bill 手写行
-#    （本包通过 dsh.bundle.patch 自己插入全局行与「记账模式」预设）
-```
-
-安装/升级**插件包**后需要重启一次 DSH：浏览器端的 client bundle 在进程启动时扫描
-（新增包的首次安装不会自动进入运行中的 client 图）。重启后浏览器刷新页面，设置里出现
-「一木记账」。之后只改 profile 补丁（`cordis.patch.yml`）可以热加载；改插件代码同样
-需要重启。
-
-> 不要求 `pnpm install`：`node_modules` 软链 + profile manifest 已足够让 Loader 解析包名；
-> HMR 也会把该软链识别为 linked root，改插件代码可热替换。
-
-### 3. 登录
+### 2. 登录
 
 DSH 设置 → **一木记账** → 扫码登录 → 用一木记账 App【首页】-【更多】-【扫一扫】扫码。
 成功后可以点「测试连接」确认 11 个工具可用。
 
-### 4. 使用
+### 3. 使用
 
 新建任务时在模式菜单里选择 **记账模式**（自定义分组）。该任务的工具列表里会出现：
 

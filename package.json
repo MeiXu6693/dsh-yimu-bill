@@ -1,6 +1,6 @@
 {
   "name": "dsh-yimu-bill",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "description": "DSH 插件：一木记账 GUI 扫码登录 + 「记账模式」预设 + 私有托管的 yimu-bill-cloud-mcp 兼容层",
   "author": "MeiXu6693",
@@ -54,7 +54,8 @@
     }
   },
   "dependencies": {
-    "qrcode-generator": "^1.4.4"
+    "qrcode-generator": "^1.4.4",
+    "yimu-bill-cloud-mcp": "^0.2.0"
   },
   "devDependencies": {
     "jsqr": "^1.4.0"
