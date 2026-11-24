@@ -1,0 +1,25 @@
+# 「一木记账」会话级预设示例：整段追加到 $DSH_HOME/profiles/<profile>/cordis.patch.yml
+# 使用前把 /path/to/yimu-bill-cloud-mcp 换成真实 clone 路径。
+# 与全局安装二选一：若全局条目已启用 registerMcp，建议设为 false，避免同一账号起两份 MCP 进程。
+- insert:
+    - id: preset-yimu-bill
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: yimu-bill
+        name: 一木记账
+        description: 记账/对账专用：一木记账 MCP（扫码登录后可用）
+        order: 10
+        plugins:
+          - id: mcp-yimu-cloud
+            name: '@deepseek-ai/dsh-mcp-client'
+            inject: [ credentials ]
+            config:
+              serverName: yimu_cloud
+              transport: stdio
+              command: !!js process.execPath
+              args: [ /path/to/yimu-bill-cloud-mcp/src/index.js ]
+              cwd: /path/to/yimu-bill-cloud-mcp
+              env:
+                YIMU_TOKEN: '${credential:YIMU_TOKEN}'
+              failOnStartupError: false
+              startupTimeoutMs: 20000

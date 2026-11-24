@@ -1,0 +1,46 @@
+{
+  "name": "dsh-yimu-bill",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "DSH 插件：一木记账扫码登录 + 按插件生命周期挂载 yimu-bill-cloud-mcp",
+  "author": "MeiXu6693",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "mcp",
+    "yimu",
+    "yimubill",
+    "bookkeeping"
+  ],
+  "homepage": "https://github.com/MeiXu6693/dsh-yimu-bill#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MeiXu6693/dsh-yimu-bill.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MeiXu6693/dsh-yimu-bill/issues"
+  },
+  "main": "plugin.mjs",
+  "exports": {
+    ".": "./plugin.mjs"
+  },
+  "files": [
+    "plugin.mjs",
+    "README.md",
+    "LICENSE",
+    "preset.example.yml"
+  ],
+  "scripts": {
+    "test": "node --test test/plugin.test.mjs"
+  },
+  "dependencies": {
+    "qrcode-generator": "^1.4.4"
+  },
+  "devDependencies": {
+    "jsqr": "^1.4.0"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  }
+}
