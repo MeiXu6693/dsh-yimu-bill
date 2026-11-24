@@ -1,50 +1,67 @@
 /**
- * dsh-yimu-bill — 一木记账（yimubill.com）DSH host 插件
+ * dsh-yimu-bill — 一木记账（yimubill.com）DSH 控制半。
  *
- * 两件事：
- * 1. 扫码登录：向官方接口申请扫码会话，把二维码渲染成终端可直接扫的文本，
- *    轮询到登录成功后把网页版 JWT 写进 DSH 凭据库（ref: YIMU_TOKEN）。
- * 2. 按插件生命周期注册 MCP server（yimu_cloud），env 用 ${credential:YIMU_TOKEN}
- *    模板。凭据写入后 mcp-client 会重建连接，工具即出现；插件卸载则 MCP 一起撤。
- *    MCP 本体在独立仓库 MeiXu6693/yimu-bill-cloud-mcp。
+ * 只做两件事：
+ * 1. 扫码登录（设置页 GUI 与 HTTP API）：申请官方扫码会话，把二维码以 data URL
+ *    返回给设置页，轮询到确认后把网页版 JWT 写进 DSH 凭据库（ref: YIMU_TOKEN）。
+ * 2. 提供「测试连接」：用当前凭据拉起 yimu-bill-cloud-mcp，真实调用 overview。
  *
- * 约束：profile 插件的模块解析到不了 /app/node_modules，所以只 import node
- * 内置模块与同目录 node_modules（qrcode-generator），不依赖 @deepseek-ai/* 包。
+ * 这里不注册任何 Agent 工具、不挂 MCP。记账工具由 tools.mjs 在「记账模式」
+ * preset 的作用域内注册（见 cordis.patch.yml），因此其他模式完全看不到。
+ *
+ * @module dsh-yimu-bill
  */
 
-import { mkdir, writeFile } from 'node:fs/promises'
-import { createRequire } from 'node:module'
-import os from 'node:os'
 import path from 'node:path'
+import { createRequire } from 'node:module'
+import { DEFAULT_SERVER_PATH, probeMcp, truncate } from './mcp-host.mjs'
 
 /** Cordis 插件名（loader 诊断用）。 */
 export const name = 'yimu-bill'
 
-/** 依赖的 host 服务；credentials 用于读写 YIMU_TOKEN，tools 用于注册登录工具。 */
-export const inject = ['tools', 'credentials']
+/** 依赖的 host 服务。 */
+export const inject = ['credentials', 'webServer']
 
-const REQUIRE = createRequire(import.meta.url)
-const QRCODE = REQUIRE('qrcode-generator')
+/** 凭据引用名。 */
+export const TOKEN_REF = 'YIMU_TOKEN'
 
 const API_BASE = 'https://yimubill.com/api'
 const ORIGIN = 'https://yimubill.com'
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36'
-const TOKEN_REF = 'YIMU_TOKEN'
+const QRCODE = createRequire(import.meta.url)('qrcode-generator')
+
+/** 两次「开始扫码」之间的最小间隔。 */
+const START_INTERVAL_MS = 3_000
+/** 两次「测试连接」之间的最小间隔。 */
+const PROBE_INTERVAL_MS = 5_000
+/** 请求体上限。 */
+const BODY_LIMIT_BYTES = 8_192
 
 /** 插件默认配置；loader 的 config 覆盖。 */
 const DEFAULTS = Object.freeze({
-  /** 是否在插件生命周期内用 ctx.mcpManager 注册 MCP server（全局安装形态） */
-  registerMcp: true,
-  serverName: 'yimu_cloud',
-  /** MCP 仓库里的 src/index.js 绝对路径；registerMcp 时必填 */
-  serverPath: '',
-  /** MCP 进程工作目录；留空则取 serverPath 所在目录 */
-  serverCwd: '',
-  /** 二维码 SVG 落盘目录 */
-  qrDir: path.join(os.tmpdir(), 'dsh-yimu-bill', 'qr'),
+  /** 二维码有效期（展示与宿主侧过期判定）。 */
   loginTtlMs: 120_000,
+  /** 测试连接时 MCP 握手超时。 */
+  probeTimeoutMs: 20_000,
+  /** MCP 入口；留空时取相邻仓库。 */
+  mcpServerPath: '',
+  /** MCP 仓库工作目录；留空时取 serverPath 的仓库根。 */
+  mcpServerCwd: '',
 })
+
+/** 带 HTTP 状态码的控制器错误；handler 用它决定响应码。 */
+export class HttpError extends Error {
+  /**
+   * @param {number} status HTTP 状态码。
+   * @param {string} message 面向用户的中文消息。
+   */
+  constructor(status, message) {
+    super(message)
+    this.name = 'HttpError'
+    this.status = status
+  }
+}
 
 /** 官方接口的公共请求头。 */
 const HEADERS = {
@@ -53,9 +70,16 @@ const HEADERS = {
   accept: 'application/json, text/plain, */*',
 }
 
-/** 调官方接口，返回原始 JSON（不解信封）。 */
-async function call(pathname, init = {}, timeoutMs = 15_000) {
-  const res = await fetch(`${API_BASE}${pathname}`, {
+/**
+ * 调官方接口，返回原始 JSON（不解信封）。
+ * @param {string} pathname 接口路径。
+ * @param {object} [init] fetch 参数。
+ * @param {number} [timeoutMs] 超时。
+ * @param {typeof fetch} [fetchImpl] 测试注入。
+ * @returns {Promise<any>}
+ */
+export async function call(pathname, init = {}, timeoutMs = 15_000, fetchImpl = fetch) {
+  const res = await fetchImpl(`${API_BASE}${pathname}`, {
     ...init,
     headers: { ...HEADERS, ...(init.headers ?? {}) },
     signal: AbortSignal.timeout(timeoutMs),
@@ -65,22 +89,28 @@ async function call(pathname, init = {}, timeoutMs = 15_000) {
   return await res.json()
 }
 
-/** 申请扫码登录会话，返回 sessionId（二维码内容为 `login:<sessionId>`）。 */
-export async function startScanLogin() {
-  const data = await call('/scanLogin/addScanLogin', { method: 'POST' })
+/**
+ * 申请扫码登录会话，返回 sessionId（二维码内容为 `login:<sessionId>`）。
+ * @param {typeof fetch} [fetchImpl] 测试注入。
+ * @returns {Promise<string>}
+ */
+export async function startScanLogin(fetchImpl = fetch) {
+  const data = await call('/scanLogin/addScanLogin', { method: 'POST' }, 15_000, fetchImpl)
   const sessionId = data?.result
   if (typeof sessionId !== 'string' || sessionId.length === 0) {
-    throw new Error(`扫码会话创建失败：${JSON.stringify(data).slice(0, 200)}`)
+    throw new Error(`扫码会话创建失败：${truncate(JSON.stringify(data), 200)}`)
   }
   return sessionId
 }
 
 /**
  * 查询一次扫码状态。
- * @returns {{ state: 'pending' } | { state: 'ok', jwt: string, userId: string, user: object }}
+ * @param {string} sessionId 扫码会话。
+ * @param {typeof fetch} [fetchImpl] 测试注入。
+ * @returns {Promise<{state: 'pending'} | {state: 'ok', jwt: string, userId: string, user: object}>}
  */
-export async function pollScanLogin(sessionId) {
-  const data = await call(`/scanLogin/getScanLogin/${encodeURIComponent(sessionId)}`)
+export async function pollScanLogin(sessionId, fetchImpl = fetch) {
+  const data = await call(`/scanLogin/getScanLogin/${encodeURIComponent(sessionId)}`, {}, 15_000, fetchImpl)
   if (data?.code === 0 && data.result && typeof data.result === 'object') {
     const jwt = typeof data.token === 'string' ? data.token : ''
     if (jwt === '') throw new Error('扫码已确认，但响应里没有 JWT')
@@ -121,6 +151,9 @@ function makeQr(text) {
 /**
  * 渲染成半块字符二维码：每个字符两行模块，宽高比接近方形，
  * 等宽字体下可直接扫描；留 4 模块静区。
+ * @param {string} text 二维码内容。
+ * @param {number} [quiet] 静区模块数。
+ * @returns {string}
  */
 export function renderQrText(text, quiet = 4) {
   const qr = makeQr(text)
@@ -143,11 +176,15 @@ export function renderQrText(text, quiet = 4) {
   return lines.join('\n')
 }
 
-/** 同时落一份 SVG，方便在图片查看器里放大扫。 */
-async function saveQrSvg(text, dir, sessionId) {
+/**
+ * 生成二维码 SVG（供设置页以 data URL 显示）。
+ * @param {string} text 二维码内容。
+ * @param {number} [quiet] 静区模块数。
+ * @returns {string}
+ */
+export function renderQrSvg(text, quiet = 4) {
   const qr = makeQr(text)
   const n = qr.getModuleCount()
-  const quiet = 4
   const size = n + quiet * 2
   const cells = []
   for (let row = 0; row < n; row += 1) {
@@ -155,15 +192,20 @@ async function saveQrSvg(text, dir, sessionId) {
       if (qr.isDark(row, col)) cells.push(`<rect x="${col + quiet}" y="${row + quiet}" width="1" height="1"/>`)
     }
   }
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" shape-rendering="crispEdges"><rect width="${size}" height="${size}" fill="#fff"/><g fill="#000">${cells.join('')}</g></svg>`
-  await mkdir(dir, { recursive: true })
-  const file = path.join(dir, `login-${sessionId}.svg`)
-  await writeFile(file, svg, { mode: 0o600 })
-  return file
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" shape-rendering="crispEdges"><rect width="${size}" height="${size}" fill="#fff"/><g fill="#000">${cells.join('')}</g></svg>`
+}
+
+/**
+ * 二维码内容转 data URL（浏览器用 `<img>` 渲染，不注入 HTML）。
+ * @param {string} text 二维码内容。
+ * @returns {string}
+ */
+export function qrDataUrl(text) {
+  return `data:image/svg+xml;base64,${Buffer.from(renderQrSvg(text), 'utf8').toString('base64')}`
 }
 
 /** JWT 里的 aud（= userId），仅用于展示。 */
-function jwtAudience(jwt) {
+export function jwtAudience(jwt) {
   try {
     const payload = JSON.parse(Buffer.from(String(jwt).split('.')[1] ?? '', 'base64url').toString('utf8'))
     return String(payload.aud ?? payload.userId ?? '')
@@ -172,185 +214,253 @@ function jwtAudience(jwt) {
   }
 }
 
-/** 文本型工具定义（DSH 直接吃 JSON Schema）。 */
-function textTool({ toolName, description, parameters, execute, render }) {
-  return {
-    name: toolName,
-    description,
-    parameters: {
-      type: 'object',
-      additionalProperties: false,
-      ...parameters,
-    },
-    output: {
-      schema: {
-        type: 'object',
-        additionalProperties: true,
-        properties: {},
-      },
-      render,
-    },
-    execute,
+/**
+ * 登录/状态/探测控制器。与 HTTP 解耦，便于单测。
+ * @param {object} options
+ * @param {object} options.credentials DSH 凭据服务（describe/resolve/set/unset）。
+ * @param {{start: Function, poll: Function}} [options.loginApi] 官方扫码接口（测试注入）。
+ * @param {(input: {token: string}) => Promise<object>} [options.probe] 测试连接实现。
+ * @param {() => number} [options.now] 时钟。
+ * @param {number} [options.ttlMs] 二维码有效期。
+ * @returns {object}
+ */
+export function createLoginController({ credentials, loginApi, probe, now = () => Date.now(), ttlMs = DEFAULTS.loginTtlMs }) {
+  const api = loginApi ?? {
+    start: () => startScanLogin(),
+    poll: (sessionId) => pollScanLogin(sessionId),
+  }
+  /** @type {Map<string, {expiresAt: number}>} */
+  const sessions = new Map()
+  let lastStartAt = Number.NEGATIVE_INFINITY
+  let lastProbeAt = Number.NEGATIVE_INFINITY
+
+  const purge = () => {
+    const current = now()
+    for (const [id, session] of sessions) if (current >= session.expiresAt) sessions.delete(id)
+    while (sessions.size > 8) {
+      const oldest = sessions.keys().next().value
+      if (oldest === undefined) break
+      sessions.delete(oldest)
+    }
+  }
+
+  async function status() {
+    let described = { configured: false }
+    try {
+      described = await credentials.describe(TOKEN_REF)
+    } catch {
+      // 凭据服务异常时按未登录处理。
+    }
+    let userId = ''
+    if (described?.configured) {
+      try {
+        const resolved = await credentials.resolve(TOKEN_REF)
+        userId = jwtAudience(resolved?.value)
+      } catch {
+        // 展示信息拿不到不影响登录状态。
+      }
+    }
+    return {
+      configured: Boolean(described?.configured),
+      userId,
+      source: typeof described?.source === 'string' ? described.source : '',
+    }
+  }
+
+  async function startLogin() {
+    const current = now()
+    if (current - lastStartAt < START_INTERVAL_MS) throw new HttpError(429, '操作太频繁，请稍后再试')
+    lastStartAt = current
+    let sessionId
+    try {
+      sessionId = await api.start()
+    } catch (error) {
+      throw new HttpError(502, `无法创建扫码会话：${truncate(error instanceof Error ? error.message : String(error), 200)}`)
+    }
+    if (typeof sessionId !== 'string' || sessionId === '') throw new HttpError(502, '扫码会话创建失败')
+    const expiresAt = current + ttlMs
+    sessions.set(sessionId, { expiresAt })
+    purge()
+    return {
+      sessionId,
+      qr: qrDataUrl(`login:${sessionId}`),
+      expiresAt,
+      expiresInSeconds: Math.round(ttlMs / 1000),
+    }
+  }
+
+  async function pollLogin(sessionId) {
+    if (typeof sessionId !== 'string' || sessionId === '') throw new HttpError(400, '缺少 sessionId')
+    const session = sessions.get(sessionId)
+    if (session === undefined || now() >= session.expiresAt) {
+      sessions.delete(sessionId)
+      return { state: 'expired' }
+    }
+    let result
+    try {
+      result = await api.poll(sessionId)
+    } catch (error) {
+      return { state: 'error', error: truncate(error instanceof Error ? error.message : String(error), 300) }
+    }
+    if (result.state === 'ok') {
+      try {
+        await credentials.set(TOKEN_REF, result.jwt)
+      } catch (error) {
+        return { state: 'error', error: `保存凭据失败：${truncate(error instanceof Error ? error.message : String(error), 200)}` }
+      }
+      sessions.delete(sessionId)
+      return {
+        state: 'ok',
+        userId: result.userId || jwtAudience(result.jwt),
+        email: typeof result.user?.email === 'string' ? result.user.email : '',
+      }
+    }
+    return { state: 'pending' }
+  }
+
+  async function logout() {
+    await credentials.unset(TOKEN_REF)
+    sessions.clear()
+    return {}
+  }
+
+  async function probeNow() {
+    const current = now()
+    if (current - lastProbeAt < PROBE_INTERVAL_MS) throw new HttpError(429, '操作太频繁，请稍后再试')
+    lastProbeAt = current
+    const described = await credentials.describe(TOKEN_REF)
+    if (!described?.configured) throw new HttpError(400, '尚未登录一木记账')
+    const resolved = await credentials.resolve(TOKEN_REF)
+    const token = String(resolved?.value ?? '')
+    if (token === '') throw new HttpError(400, '凭据读取失败，请重新登录')
+    try {
+      return await probe({ token })
+    } catch (error) {
+      throw new HttpError(502, truncate(error instanceof Error ? error.message : String(error), 300))
+    }
+  }
+
+  return { status, startLogin, pollLogin, logout, probe: probeNow, sessions }
+}
+
+/**
+ * 读取并解析 JSON 请求体。
+ * @param {AsyncIterable<Buffer>} req 请求流。
+ * @param {number} [limit] 字节上限。
+ * @returns {Promise<object>}
+ */
+export async function readJsonBody(req, limit = BODY_LIMIT_BYTES) {
+  const chunks = []
+  let size = 0
+  for await (const chunk of req) {
+    size += chunk.length
+    if (size > limit) throw new HttpError(413, '请求体过大')
+    chunks.push(chunk)
+  }
+  if (size === 0) return {}
+  let parsed
+  try {
+    parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  } catch {
+    throw new HttpError(400, '请求体不是合法 JSON')
+  }
+  return parsed !== null && typeof parsed === 'object' ? parsed : {}
+}
+
+/** 输出 JSON 响应（no-store，禁止缓存登录态）。 */
+function sendJson(res, status, payload) {
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+  })
+  res.end(JSON.stringify(payload))
+}
+
+/**
+ * 构造 `/api/yimu-bill` 前缀路由处理器。
+ * @param {object} controller createLoginController 的返回值。
+ * @param {object} [logger] 插件 logger。
+ * @returns {(req: any, res: any) => Promise<void>}
+ */
+export function createHandler(controller, logger) {
+  return async (req, res) => {
+    let route
+    try {
+      route = new URL(req.url ?? '/', 'http://localhost').pathname
+    } catch {
+      route = '/'
+    }
+    const suffix = route.startsWith('/api/yimu-bill') ? route.slice('/api/yimu-bill'.length) || '/' : route
+    try {
+      if (suffix === '/status') {
+        if (req.method !== 'GET') throw new HttpError(405, '只支持 GET')
+        sendJson(res, 200, { ok: true, ...(await controller.status()) })
+        return
+      }
+      if (suffix === '/login/start') {
+        if (req.method !== 'POST') throw new HttpError(405, '只支持 POST')
+        sendJson(res, 200, { ok: true, ...(await controller.startLogin()) })
+        return
+      }
+      if (suffix === '/login/poll') {
+        if (req.method !== 'POST') throw new HttpError(405, '只支持 POST')
+        const body = await readJsonBody(req)
+        sendJson(res, 200, { ok: true, ...(await controller.pollLogin(body.sessionId)) })
+        return
+      }
+      if (suffix === '/logout') {
+        if (req.method !== 'POST') throw new HttpError(405, '只支持 POST')
+        sendJson(res, 200, { ok: true, ...(await controller.logout()) })
+        return
+      }
+      if (suffix === '/probe') {
+        if (req.method !== 'POST') throw new HttpError(405, '只支持 POST')
+        sendJson(res, 200, { ok: true, ...(await controller.probe()) })
+        return
+      }
+      throw new HttpError(404, '未知接口')
+    } catch (error) {
+      const status = error instanceof HttpError ? error.status : 500
+      if (status >= 500) logger?.warn?.(`[yimu-bill] ${req.method} ${suffix} 失败：${error instanceof Error ? error.stack ?? error.message : String(error)}`)
+      const message = error instanceof Error ? error.message : String(error)
+      sendJson(res, status, { ok: false, error: truncate(message, 300) })
+    }
   }
 }
 
 /**
- * 插件入口。
- * @param ctx cordis 上下文（已注入 tools/credentials）
- * @param rawConfig loader 传入的配置
+ * 插件入口：注册设置页使用的同源 HTTP API。
+ * @param {object} ctx cordis 上下文（已注入 credentials/webServer）。
+ * @param {object} [rawConfig] 插件行配置。
  */
 export function apply(ctx, rawConfig = {}) {
   const config = { ...DEFAULTS, ...rawConfig }
-  /** 进行中的扫码会话：sessionId → { startedAt } */
-  const sessions = new Map()
-
-  const requireQrDir = () => config.qrDir
-
-  ctx.tools.register(
-    textTool({
-      toolName: 'yimu_login',
-      description:
-        '一木记账扫码登录：申请扫码会话并显示二维码（文本二维码，等宽字体可直接扫）。用一木记账 App【首页】-【更多】-【扫一扫】扫描后，调用 yimu_login_wait 等待登录完成。二维码约 2 分钟有效。',
-      parameters: { properties: {}, required: [] },
-      render: (_args, value) => [
-        {
-          type: 'text',
-          text: [
-            '用一木记账 App【首页】-【更多】-【扫一扫】扫描下面的二维码（约 2 分钟有效）：',
-            '',
-            '```',
-            String(value.qr_text),
-            '```',
-            '',
-            `session_id: ${value.session_id}`,
-            value.qr_file ? `二维码图片: ${value.qr_file}` : '',
-            '扫完调用 yimu_login_wait 等待登录结果。',
-          ]
-            .filter((line) => line !== '')
-            .join('\n'),
-        },
-      ],
-      async execute() {
-        const sessionId = await startScanLogin()
-        const payload = `login:${sessionId}`
-        sessions.set(sessionId, { startedAt: Date.now() })
-        const file = await saveQrSvg(payload, requireQrDir(), sessionId).catch(() => '')
-        return {
-          session_id: sessionId,
-          qr_payload: payload,
-          qr_text: renderQrText(payload),
-          qr_file: file,
-          expires_in_seconds: Math.round(config.loginTtlMs / 1000),
-        }
-      },
-    }),
+  const serverPath = String(config.mcpServerPath ?? '').trim() || DEFAULT_SERVER_PATH
+  const serverCwd = String(config.mcpServerCwd ?? '').trim() || path.dirname(path.dirname(serverPath))
+  const probe =
+    typeof config.probe === 'function'
+      ? config.probe
+      : (input) =>
+          probeMcp({
+            serverPath,
+            serverCwd,
+            token: input.token,
+            timeoutMs: config.probeTimeoutMs,
+          })
+  const controller = createLoginController({
+    credentials: ctx.credentials,
+    ttlMs: config.loginTtlMs,
+    probe,
+  })
+  const handler = createHandler(controller, ctx.logger)
+  ctx.effect(
+    () =>
+      ctx.webServer.register({
+        kind: 'prefix',
+        path: '/api/yimu-bill',
+        handler,
+      }),
+    'yimu-bill: /api/yimu-bill routes',
   )
-
-  ctx.tools.register(
-    textTool({
-      toolName: 'yimu_login_wait',
-      description:
-        '等待一木记账扫码登录结果（轮询官方接口，最多等 timeout_seconds 秒）。成功后把网页版 JWT 写入 DSH 凭据库（YIMU_TOKEN），MCP server 会自动重连。',
-      parameters: {
-        properties: {
-          session_id: { type: 'string', description: 'yimu_login 返回的 session_id' },
-          timeout_seconds: {
-            type: 'integer',
-            description: '最多等待多少秒（默认 20，最大 45）',
-          },
-        },
-        required: ['session_id'],
-      },
-      render: (_args, value) => [
-        {
-          type: 'text',
-          text: value.ok
-            ? `扫码登录成功：user_id=${value.user_id}${value.email ? `，账号 ${value.email}` : ''}。JWT 已写入 DSH 凭据 ${TOKEN_REF}，MCP server 会用该凭据重连。`
-            : `仍未扫码成功（${value.message}）。二维码可能已过期，可重新调用 yimu_login 生成新的。`,
-        },
-      ],
-      async execute(args) {
-        const sessionId = String(args.session_id ?? '')
-        if (sessionId === '') throw new Error('缺少 session_id')
-        const timeoutSeconds = Math.min(Math.max(Number(args.timeout_seconds ?? 20), 1), 45)
-        const deadline = Date.now() + timeoutSeconds * 1000
-        let result = { state: 'pending' }
-        while (Date.now() < deadline) {
-          result = await pollScanLogin(sessionId)
-          if (result.state === 'ok') break
-          await new Promise((resolve) => setTimeout(resolve, 2_000))
-        }
-        if (result.state !== 'ok') {
-          return { ok: false, message: '未检测到扫码确认（可能还没扫，或二维码已过期）' }
-        }
-        await ctx.credentials.set(TOKEN_REF, result.jwt)
-        sessions.delete(sessionId)
-        return {
-          ok: true,
-          user_id: result.userId || jwtAudience(result.jwt),
-          email: typeof result.user.email === 'string' ? result.user.email : '',
-        }
-      },
-    }),
-  )
-
-  ctx.tools.register(
-    textTool({
-      toolName: 'yimu_login_status',
-      description: `查看一木记账登录状态：DSH 凭据 ${TOKEN_REF} 是否已配置（不显示 token 内容）。`,
-      parameters: { properties: {}, required: [] },
-      render: (_args, value) => [
-        {
-          type: 'text',
-          text: value.configured
-            ? `已登录：凭据 ${TOKEN_REF} 已配置${value.user_id ? `，user_id=${value.user_id}` : ''}。`
-            : `未登录：凭据 ${TOKEN_REF} 未配置，先调用 yimu_login 扫码。`,
-        },
-      ],
-      async execute() {
-        const described = await ctx.credentials.describe(TOKEN_REF)
-        return { configured: Boolean(described.configured) }
-      },
-    }),
-  )
-
-  ctx.tools.register(
-    textTool({
-      toolName: 'yimu_logout',
-      description: `清除 DSH 里的一木记账凭据 ${TOKEN_REF}（不会影响手机 App 的登录状态）。`,
-      parameters: { properties: {}, required: [] },
-      render: () => [{ type: 'text', text: `已清除凭据 ${TOKEN_REF}。` }],
-      async execute() {
-        await ctx.credentials.unset(TOKEN_REF)
-        return { ok: true }
-      },
-    }),
-  )
-
-  // MCP server 跟随插件生命周期：插件卸载 → server 撤下、工具消失。
-  // 会话级（preset）形态不启用本段，由 preset 里的 mcp-client 条目自行挂载。
-  if (config.registerMcp !== true) return
-
-  const serverPath = String(config.serverPath ?? '').trim()
-  if (serverPath === '') {
-    ctx.logger?.warn?.('[yimu-bill] registerMcp 已启用但未配置 serverPath，跳过 MCP 注册（登录工具仍可用）')
-    return
-  }
-  const mcpManager = ctx.get('mcpManager')
-  if (mcpManager === undefined) {
-    ctx.logger?.warn?.('[yimu-bill] 未找到 mcpManager 服务，跳过 MCP 注册（登录工具仍可用）')
-    return
-  }
-  const serverCwd = String(config.serverCwd ?? '').trim() || path.dirname(serverPath)
-  ctx.effect(() => {
-    const dispose = mcpManager.register(config.serverName, {
-      transport: 'stdio',
-      command: process.execPath,
-      args: [serverPath],
-      cwd: serverCwd,
-      env: { [TOKEN_REF]: `\${credential:${TOKEN_REF}}` },
-      startupTimeoutMs: 20_000,
-    })
-    return () => dispose()
-  }, 'yimu-bill: register mcp server')
 }

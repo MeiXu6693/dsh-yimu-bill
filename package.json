@@ -1,8 +1,8 @@
 {
   "name": "dsh-yimu-bill",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
-  "description": "DSH 插件：一木记账扫码登录 + 按插件生命周期挂载 yimu-bill-cloud-mcp",
+  "description": "DSH 插件：一木记账 GUI 扫码登录 + 「记账模式」预设 + 私有托管的 yimu-bill-cloud-mcp 兼容层",
   "author": "MeiXu6693",
   "keywords": [
     "dsh",
@@ -20,18 +20,37 @@
   "bugs": {
     "url": "https://github.com/MeiXu6693/dsh-yimu-bill/issues"
   },
-  "main": "plugin.mjs",
+  "main": "./plugin.mjs",
   "exports": {
-    ".": "./plugin.mjs"
+    ".": "./plugin.mjs",
+    "./tools": "./tools.mjs",
+    "./client": "./client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
   },
   "files": [
     "plugin.mjs",
+    "tools.mjs",
+    "mcp-host.mjs",
+    "client.js",
+    "cordis.patch.yml",
     "README.md",
     "LICENSE",
     "preset.example.yml"
   ],
   "scripts": {
     "test": "node --test test/plugin.test.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
   },
   "dependencies": {
     "qrcode-generator": "^1.4.4"
@@ -41,6 +60,6 @@
   },
   "license": "MIT",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   }
 }
