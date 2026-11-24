@@ -273,6 +273,13 @@ window.__ModuleLoader__.load({
               )
             : null,
         ),
+        configured
+          ? h(
+              'p',
+              { className: 'yimu-hint' },
+              '退出登录只删除本机凭据；一木记账网页端没有提供服务端注销接口，服务端 token 不会因此失效。',
+            )
+          : null,
         qr === null
           ? null
           : h(
@@ -304,7 +311,6 @@ window.__ModuleLoader__.load({
           'ul',
           { className: 'yimu-list' },
           h('li', null, '记账模式 = 标准模式的全部能力 + 一木记账工具，行为与标准模式一致。'),
-          h('li', null, '工作区不是挂载单位：工具按任务（会话）启动时选择的模式决定。'),
           h('li', null, '登录/退出会立即影响新任务的工具；已经进行中的任务可能保持原状。'),
         ),
       )

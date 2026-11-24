@@ -125,11 +125,44 @@ DSH 设置 → **一木记账** → 扫码登录 → 用一木记账 App【首�
 
 ## 安全与边界
 
-- JWT 只存在 DSH 凭据库（`$DSH_HOME/.credentials.yaml`，0600）与 MCP 子进程环境变量里；HTTP 响应、日志、配置都不含 token。
-- 设置页只显示 userId（JWT `aud`）与凭据来源，不回显 token。
-- 二维码以 `<img src="data:image/svg+xml;base64,…">` 渲染，不注入 HTML。
-- 退出登录只清 DSH 凭据，不影响手机 App 登录态。
-- headless / 无 GUI 场景：直接把 `YIMU_TOKEN` 放进凭据库或环境变量，记账模式同样可用。
+### token 存在哪
+
+- 登录成功后，网页版 JWT 写入 DSH 凭据库：`$DSH_HOME/.credentials.yaml` 的 `refs.YIMU_TOKEN`。
+  文件权限由 DSH 维护为 `0600`，属主是 DSH 进程的运行用户（本机容器里是 `dsh`，UID 99）。
+- 记账工具启动 MCP 时，token 通过子进程环境变量 `YIMU_TOKEN` 传入；MCP 仓库的 `YIMU_TOKEN` 环境变量也作为 headless 场景的兜底。
+- HTTP 响应、profile 配置、日志都不含 token；设置页只显示 userId（JWT 的 `aud`）和凭据来源。
+
+### 谁能读到
+
+**这不是「只有本插件能拿到」的隔离。** 当前实现下：
+
+- DSH 的 `credentials` 服务是进程级共享的：任何声明 `inject: ['credentials']` 的插件都能
+  `resolve('YIMU_TOKEN')`；凭据记录也只靠 `scope/id` 命名约定，provider 不做 owner 校验。
+- Agent 的工具（例如 `bash`）以同一个 OS 用户运行，可以直接读 `$DSH_HOME/.credentials.yaml`。
+- MCP 子进程的环境变量在 Linux 上可被同用户进程读取（`/proc/<pid>/environ`；本机没有 Yama 限制）。
+- 容器 root、备份/快照、能进入 DSH 容器或 DSH Home 的人，都能读到。
+
+因此：**信任边界是整个 DSH 容器用户**。需要更强隔离时，只能把 token 移到独立服务/容器
+（本插件当前未提供该形态）。
+
+### token 的生命周期
+
+- 这是网页版 JWT（HS256），payload 只有 `aud`（userId），**没有 `exp` / `iat` / `jti`**，
+  属于长期凭据；请按「密码」级别对待。
+- 一木记账网页端的「退出登录」是纯前端行为（清 `localStorage` 后刷新），不会调用服务端注销接口。
+  我们实测了常见注销路径（`/api/user/logout`、`/api/logout`、`/api/auth/logout`、`/api/token/revoke` …），
+  全部 404；网页端没有「让 token 失效」的 API。
+- 本插件的「退出登录」会删除 DSH 凭据并关闭 MCP 子进程，但**服务端 token 仍然有效**；
+  重新扫码也不保证旧 token 失效。若 token 泄露，请修改一木记账账号凭据或联系官方支持，
+  并检查 DSH 的访问范围。
+
+### 降低暴露面的建议
+
+- 不要把 DSH 容器或 `$DSH_HOME` 暴露给不可信用户；备份 DSH Home 时按含密钥处理。
+- 不要让不可信的 Agent/插件在本机获得 `bash` 或文件读取能力；它们能读到上述凭据。
+- 定期确认 `$DSH_HOME/.credentials.yaml` 权限仍是 `0600`。
+- headless / 无 GUI 场景：把 `YIMU_TOKEN` 放进 DSH 凭据库或进程环境变量即可，记账模式同样可用。
+
 
 ## 开发
 
