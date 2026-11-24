@@ -33,6 +33,7 @@ DSH 设置页「一木记账」(client.js)
        └─ 注册 yimu_* + yimu_status
 ```
 
+- dsh-go 原生面板由 `lib/native.mjs` 提供（独立行 `yimu-bill-native`），仅在主机提供 `dshGo` 服务时注册；与 Web 设置页共用同一个登录控制器和 DSH 凭据。
 - 工具注册使用 Cordis 的「调用方作用域」语义：在 preset revision 内注册的工具，只对被绑定到该模式的会话可见。
 - MCP server 由 npm 依赖 `yimu-bill-cloud-mcp` 提供；MCP SDK 从该依赖解析，插件不直接依赖 `@deepseek-ai` 包。
 
@@ -80,7 +81,20 @@ DSH 设置 → **一木记账** → 扫码登录 → 用一木记账 App【首�
 | `yimu_admin` | `admin` |
 | `yimu_status` | 插件自带：登录/MCP/工具状态 |
 
-未登录时只有 `yimu_status`，它会提示去设置页扫码。
+未登录时只有 `yimu_status`，它会提示去设置页或 dsh-go 原生面板扫码。
+
+### 4. dsh-go 原生 App（0.2.2+）
+
+dsh-go 手机 App 不加载 Web 设置页，插件另外提供原生面板：
+
+- 打开 **全部功能 → 一木记账**，或对话详情 →「插件」页签 → **一木记账**；
+- 面板里直接显示二维码、登录状态和「刷新二维码 / 测试连接 / 退出登录」；
+- **截图二维码**，再到一木记账 App【首页】→【更多】→【扫一扫】扫码即可；
+- dsh-go 原生协议没有“保存到系统相册”的动作，所以不提供保存按钮，系统截图即可；
+- 登录成功后同样写 DSH 凭据，记账模式立即可用；
+- 这里不新增 TTL/超时/MCP 路径等设置项，全部使用默认值。
+
+DSH Web 设置页的扫码仍保留，和原生面板共用同一份登录态。
 
 ## 配置项
 
@@ -170,7 +184,8 @@ npm test        # 二维码矩阵解码 + 接口契约 + 控制器 + schema 清�
 | `plugin.mjs` | DSH 入口：`apply` + `/api/yimu-bill/*` 路由与错误映射 |
 | `lib/yimu-api.mjs` | 官方扫码接口唯一入口；接口变化只改这里 |
 | `lib/login-controller.mjs` | 扫码会话、限频、凭据写入、测试连接 |
-| `lib/qr.mjs` | 二维码矩阵 / SVG / data URL |
+| `lib/qr.mjs` | 二维码矩阵 / SVG / PNG data URL |
+| `lib/native.mjs` | dsh-go 原生面板：二维码、状态、测试、退出 |
 | `lib/constants.mjs` | `TOKEN_REF` 等共享常量 |
 | `tools.mjs` | 记账模式工具半（私有托管 MCP） |
 | `mcp-host.mjs` | MCP 适配：schema 清洗、工具映射、探测 |

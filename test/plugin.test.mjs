@@ -5,6 +5,8 @@ import * as plugin from '../plugin.mjs'
 import * as tools from '../tools.mjs'
 import * as qr from '../lib/qr.mjs'
 import { createLoginController, HttpError } from '../lib/login-controller.mjs'
+import * as native from '../lib/native.mjs'
+import { createNativePanel } from '../lib/native.mjs'
 import { TOKEN_REF } from '../lib/constants.mjs'
 import { jwtAudience, pollScanLogin, startScanLogin } from '../lib/yimu-api.mjs'
 import {
@@ -476,4 +478,93 @@ test('控制半 apply：注册 /api/yimu-bill 前缀路由', () => {
   assert.equal(routes[0].kind, 'prefix')
   assert.equal(routes[0].path, '/api/yimu-bill')
   assert.equal(typeof routes[0].handler, 'function')
+})
+
+test('原生面板：二维码 PNG 体积与格式', async () => {
+  const url = await qr.qrDataUrlPng('login:abc')
+  assert.match(url, /^data:image\/png;base64,/)
+  const bytes = Buffer.from(url.split(',')[1], 'base64')
+  assert.equal(bytes.subarray(0, 8).toString('hex'), '89504e470d0a1a0a')
+  assert.ok(bytes.length > 100)
+  assert.ok(url.length < 65_536)
+})
+
+test('原生面板：未登录出二维码，扫码成功后自动显示已登录', async () => {
+  let configured = false
+  const controller = {
+    async status() {
+      return { configured }
+    },
+    async startLogin() {
+      return { sessionId: 's1' }
+    },
+    async pollLogin() {
+      configured = true
+      return { state: 'ok', userId: 'u1' }
+    },
+    async logout() {
+      configured = false
+      return {}
+    },
+    async probe() {
+      return { tools: 11 }
+    },
+  }
+  const panel = createNativePanel(controller, {
+    qrPng: async (text) => `data:image/png;base64,${Buffer.from(text).toString('base64')}`,
+    intervalMs: 5,
+  })
+  const states = []
+  const cleanup = panel.data({}, (data) => states.push(data), { locale: 'zh' })
+  await new Promise((resolve) => setTimeout(resolve, 30))
+
+  const view = panel.view()
+  assert.equal(view.children[1].type, 'image')
+  assert.deepEqual(view.children[1].src, { $: 'data.qr' })
+  assert.ok(states.some((state) => String(state.qr).startsWith('data:image/png;base64,')))
+  assert.match(states.at(-1).statusText, /已登录（userId u1）/)
+
+  const refresh = await panel.actions.refresh().result()
+  assert.match(refresh.patch.qr, /^data:image\/png;base64,/)
+  const tested = await panel.actions.test().result()
+  assert.match(tested.toast, /11 个工具/)
+  const logout = await panel.actions.logout().result()
+  assert.equal(logout.patch.statusText, '已退出登录')
+  cleanup()
+})
+
+test('原生面板：apply 在无 dshGo 时不报错，有 dshGo 时注册 yimu-login', () => {
+  const noDshGo = {
+    credentials: fakeCredentials(),
+    inject() {},
+    effect() {},
+  }
+  assert.doesNotThrow(() => native.apply(noDshGo))
+
+  const panels = new Map()
+  const dshGo = {
+    panel(id, definition) {
+      panels.set(id, definition)
+      return () => {}
+    },
+  }
+  const withDshGo = {
+    credentials: fakeCredentials(),
+    inject(deps, callback) {
+      assert.deepEqual(deps, ['dshGo'])
+      callback({
+        dshGo,
+        effect(fn) {
+          fn()
+          return () => {}
+        },
+      })
+    },
+    effect() {},
+  }
+  native.apply(withDshGo)
+  assert.ok(panels.has('yimu-login'))
+  assert.equal(typeof panels.get('yimu-login').view, 'function')
+  assert.equal(typeof panels.get('yimu-login').data, 'function')
+  assert.equal(typeof panels.get('yimu-login').actions.refresh, 'function')
 })

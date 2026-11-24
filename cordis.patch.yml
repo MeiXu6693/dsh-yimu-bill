@@ -1,8 +1,9 @@
 # dsh-yimu-bill bundle patch。
 #
-# 两行：
+# 三行：
 #   1. yimu-bill        控制半：设置页 /api/yimu-bill 路由（登录、状态、测试连接），不注册工具。
-#   2. preset-yimu-bill 记账模式：逐行复制 DSH 0.2.3-alpha.2 的 standard 预设（presets/standard.patch.yml），
+#   2. yimu-bill-native dsh-go 原生面板：在手机 App 里显示二维码/状态/测试/退出；无 dshGo 服务时静默。
+#   3. preset-yimu-bill 记账模式：逐行复制 DSH 0.2.3-alpha.2 的 standard 预设（presets/standard.patch.yml），
 #                       仅在 plugins 末尾追加 yimu-bill-tools；standard 自身的提示词与配置一律不改。
 #
 # DSH 升级后若标准模式有变化，按上面来源文件对照补差即可。
@@ -13,12 +14,15 @@
       config:
         loginTtlMs: 120000
 
+    - id: yimu-bill-native
+      name: dsh-yimu-bill/native
+
     - id: preset-yimu-bill
       name: '@deepseek-ai/dsh-agent-preset'
       config:
         id: yimu-bill
         name: 记账模式
-        description: 基于标准模式，额外提供一木记账的查询、统计与记账工具；先在 设置 → 一木记账 扫码登录。
+        description: 基于标准模式，额外提供一木记账的查询、统计与记账工具；先在 设置 → 一木记账 或 dsh-go 全部功能 → 一木记账 扫码登录。
         order: 6
         plugins:
           - id: persona
