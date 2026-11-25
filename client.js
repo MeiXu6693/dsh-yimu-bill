@@ -172,6 +172,7 @@ window.__ModuleLoader__.load({
       }, [phase, qr])
 
       const startLogin = async () => {
+        if (loading || phase === 'starting') return
         setError('')
         setNotice('')
         setPhase('starting')
@@ -217,6 +218,7 @@ window.__ModuleLoader__.load({
       const configured = Boolean(status && status.configured)
       const remaining = qr === null ? 0 : Math.max(0, Math.ceil((qr.expiresAt - now) / 1000))
       const busy = phase === 'starting'
+      const loginDisabled = busy || loading
 
       const accountCard = h(
         'section',
@@ -250,12 +252,12 @@ window.__ModuleLoader__.load({
             {
               type: 'button',
               className: `yimu-btn ${configured ? '' : 'yimu-btn-primary'}`,
-              disabled: busy,
+              disabled: loginDisabled,
               onClick: () => {
                 void startLogin()
               },
             },
-            busy ? '正在申请二维码…' : qr === null ? (configured ? '重新登录' : '扫码登录') : '刷新二维码',
+            loading ? '正在检查登录状态…' : busy ? '正在申请二维码…' : qr === null ? (configured ? '重新登录' : '扫码登录') : '刷新二维码',
           ),
           configured
             ? h(

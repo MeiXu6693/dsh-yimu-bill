@@ -471,6 +471,43 @@ test('网页半侧 handler：路由、方法、JSON 体与错误映射', async (
   assert.deepEqual(JSON.parse(failingRes.body), { ok: false, error: '我是茶壶' })
 })
 
+test('原生面板：检查登录状态时刷新不申请二维码', async () => {
+  let starts = 0
+  let releaseStatus
+  const statusGate = new Promise((resolve) => { releaseStatus = resolve })
+  const controller = {
+    async status() {
+      await statusGate
+      return { configured: false }
+    },
+    async startLogin() {
+      starts += 1
+      return { sessionId: 's1' }
+    },
+    async pollLogin() {
+      return { state: 'pending' }
+    },
+    async logout() {
+      return {}
+    },
+    async probe() {
+      return { tools: 11 }
+    },
+  }
+  const panel = createNativePanel(controller, {
+    qrPng: async () => 'data:image/png;base64,AAAA',
+    intervalMs: 1_000,
+  })
+  const cleanup = panel.data({}, () => {}, { locale: 'zh' })
+  const refresh = await panel.actions.refresh().result()
+  assert.equal(starts, 0)
+  assert.match(refresh.toast, /请稍候/)
+  releaseStatus()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(starts, 1)
+  cleanup()
+})
+
 test('控制半 apply：注册网页路由；无 dshGo 时不注册原生面板、不报错', () => {
   const routes = []
   const injected = []
