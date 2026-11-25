@@ -64,10 +64,11 @@ function clock(startAt = 1_000) {
 }
 
 /** 在假环境里加载 client.js，返回它在当前宿主环境注册的 slot。 */
-async function loadClientBundle({ appWebView }) {
+async function loadClientBundle({ appWebView, userAgent }) {
   const g = globalThis
   const prevWindow = Object.prototype.hasOwnProperty.call(g, 'window') ? g.window : undefined
   const prevDocument = Object.prototype.hasOwnProperty.call(g, 'document') ? g.document : undefined
+  const prevNavigator = Object.getOwnPropertyDescriptor(g, 'navigator')
   const defs = []
   const fakeWindow = {
     __ModuleLoader__: {
@@ -79,8 +80,9 @@ async function loadClientBundle({ appWebView }) {
   if (appWebView) fakeWindow.DshGoIsland = { postMessage() {} }
   g.window = fakeWindow
   g.document = { head: { append() {} }, createElement: () => ({ dataset: {}, style: {}, textContent: '' }) }
+  if (userAgent !== undefined) Object.defineProperty(g, 'navigator', { value: { userAgent }, configurable: true })
   try {
-    await import(`../client.js?test=${appWebView ? 'app' : 'browser'}`)
+    await import(`../client.js?test=${appWebView ? 'app' : 'browser'}&ua=${encodeURIComponent(userAgent ?? '')}`)
     const React = { createElement: () => null, useEffect() {}, useRef: () => ({}), useState: () => [null, () => {}] }
     const app = defs.at(-1).factory((name) => (name === 'react' ? React : undefined))
     const registrations = []
@@ -104,6 +106,8 @@ async function loadClientBundle({ appWebView }) {
     else g.window = prevWindow
     if (prevDocument === undefined) delete g.document
     else g.document = prevDocument
+    if (prevNavigator === undefined) delete g.navigator
+    else Object.defineProperty(g, 'navigator', prevNavigator)
   }
 }
 
@@ -592,6 +596,14 @@ test('网页入口：浏览器里注册「设置 → 一木记账」和插件详
 
 test('网页入口：dsh-go App 网页岛里隐藏「设置 → 一木记账」，只留插件详情页', async () => {
   const registrations = await loadClientBundle({ appWebView: true })
+  assert.deepEqual(registrations, [['plugins.bundle.config', 'dsh-yimu-bill']])
+})
+
+test('网页入口：Android WebView UA 兜底隐藏设置入口', async () => {
+  const registrations = await loadClientBundle({
+    appWebView: false,
+    userAgent: 'Mozilla/5.0 (Linux; Android 17; Pixel 9 Build/BP2A; wv) AppleWebKit/537.36 Chrome/140 Mobile Safari/537.36',
+  })
   assert.deepEqual(registrations, [['plugins.bundle.config', 'dsh-yimu-bill']])
 })
 

@@ -19,7 +19,7 @@
       config:
         id: yimu-bill
         name: 记账模式
-        description: 基于标准模式，额外提供一木记账的查询、统计与记账工具；先在 设置 → 一木记账 或 dsh-go 全部功能 → 一木记账 扫码登录。
+        description: 基于标准模式，额外提供一木记账的查询、统计与记账工具；先在 设置 → 一木记账（网页版）或 设置 → 插件 → 一木记账（App）扫码登录。
         order: 6
         plugins:
           - id: persona
