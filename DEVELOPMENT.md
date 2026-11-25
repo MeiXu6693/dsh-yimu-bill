@@ -87,7 +87,7 @@ npm test        # 二维码 PNG + 接口契约 + 控制器 + schema 清洗 + 工
 |---|---|---|
 | [`test.yml`](.github/workflows/test.yml) | push / PR | Node 22/24 单测 + 打包白名单 |
 | [`release.yml`](.github/workflows/release.yml) | tag `v*.*.*` | 测试 → 版本校验 → GitHub Release → 可选 staged npm 发布 |
-| [`image-compat.yml`](.github/workflows/image-compat.yml) | 每 3 小时 / 手动 / 本文件变更 | 跟随 dsh-docker 发版，在发布镜像里做兼容测试 |
+| [`image-compat.yml`](.github/workflows/image-compat.yml) | 每 3 小时 / 手动 / workflow 或兼容脚本变更 | 跟随 dsh-docker 发版，在发布镜像里做兼容测试 |
 
 ### 跟随 dsh-docker 发版（镜像兼容）
 
