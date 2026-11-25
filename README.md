@@ -1,5 +1,8 @@
 # dsh-yimu-bill
 
+[![test](https://github.com/MeiXu6693/dsh-yimu-bill/actions/workflows/test.yml/badge.svg)](https://github.com/MeiXu6693/dsh-yimu-bill/actions/workflows/test.yml)
+[![image-compat](https://github.com/MeiXu6693/dsh-yimu-bill/actions/workflows/image-compat.yml/badge.svg)](https://github.com/MeiXu6693/dsh-yimu-bill/actions/workflows/image-compat.yml)
+
 一木记账（[yimubill.com](https://yimubill.com)）的 **DSH 插件**：dsh-go 原生扫码登录 + 「记账模式」预设 + 私有托管的记账 MCP 兼容层。
 
 MCP 本体在独立仓库 [`MeiXu6693/yimu-bill-cloud-mcp`](https://github.com/MeiXu6693/yimu-bill-cloud-mcp)（11 个语义化工具）；本仓库只做 DSH 宿主侧的登录、模式与工具映射。

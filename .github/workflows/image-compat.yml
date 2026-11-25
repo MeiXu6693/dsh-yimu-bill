@@ -1,0 +1,167 @@
+name: image-compat
+
+# 跟随 dsh-docker 的发版，在真实发布镜像里测试本插件。
+#
+# 触发方式：
+#   - schedule：每 3 小时查询一次 MeiXu6693/dsh-docker 的最新 Release；
+#   - workflow_dispatch：手动指定镜像 tag，或对已测过的镜像强制重跑；
+#   - push：改动本 workflow 或兼容脚本时立即跑一次（首次提交也靠它验证）。
+#
+# 同一个镜像 tag 成功测过后，后续 schedule 会命中 actions/cache 标记并跳过
+# 拉镜像；失败不写标记，所以下一次 schedule 会自动重试。
+#
+# 只覆盖宿主半侧（插件安装、profile bundle、网页路由、真实扫码接口）；
+# dsh-go 原生面板需要 App 环境，由仓库单测里的假 dshGo 覆盖。
+
+on:
+  schedule:
+    - cron: '17 */3 * * *'
+  workflow_dispatch:
+    inputs:
+      image:
+        description: '要测试的镜像 tag（留空 = dsh-docker 最新 Release），例如 0.2.3-alpha.2'
+        required: false
+        default: ''
+      force:
+        description: '已测过的镜像也重跑'
+        type: boolean
+        required: false
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/image-compat.yml'
+      - 'scripts/test-image-compat.sh'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-compat
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: resolve image
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      tested: ${{ steps.seen.outputs.cache-hit }}
+      skip: ${{ steps.decide.outputs.skip }}
+    steps:
+      - name: Resolve the newest dsh-docker release
+        id: image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED: ${{ inputs.image }}
+        run: |
+          set -euo pipefail
+          requested="${REQUESTED//[[:space:]]/}"
+          if [ -n "${requested}" ]; then
+            image="${requested#dsh-v}"
+            release="dsh-v${image}"
+          else
+            release_json="$(curl --silent --show-error --fail --max-time 30 \
+              --header "Authorization: Bearer ${GH_TOKEN}" \
+              --header 'Accept: application/vnd.github+json' \
+              https://api.github.com/repos/MeiXu6693/dsh-docker/releases/latest)"
+            release="$(printf '%s' "${release_json}" | jq -r '.tag_name // empty')"
+            case "${release}" in
+              dsh-v*) ;;
+              *) echo "unexpected dsh-docker release tag: '${release}'" >&2; exit 1 ;;
+            esac
+            image="${release#dsh-v}"
+          fi
+          case "${image}" in
+            '') echo 'empty image tag' >&2; exit 1 ;;
+            */*|*:*) echo "image input must be a plain tag without registry or digest: '${image}'" >&2; exit 1 ;;
+          esac
+          echo "release=${release}" >> "${GITHUB_OUTPUT}"
+          echo "image=${image}" >> "${GITHUB_OUTPUT}"
+          {
+            echo '### dsh-docker release under test'
+            echo ''
+            echo "- release: \`${release}\`"
+            echo "- image: \`ghcr.io/meixu6693/dsh:${image}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Restore the tested marker
+        id: seen
+        uses: actions/cache/restore@v4
+        with:
+          path: .ci/dsh-image-tested
+          key: dsh-image-${{ steps.image.outputs.image }}
+          lookup-only: true
+
+      - name: Decide whether to test
+        id: decide
+        env:
+          CACHE_HIT: ${{ steps.seen.outputs.cache-hit }}
+          FORCE: ${{ inputs.force }}
+          EVENT: ${{ github.event_name }}
+          REQUESTED: ${{ inputs.image }}
+        run: |
+          if [ "${EVENT}" = "push" ] || [ "${FORCE}" = "true" ] || [ -n "${REQUESTED//[[:space:]]/}" ]; then
+            echo 'skip=false' >> "${GITHUB_OUTPUT}"
+            echo 'running: push, forced, or an explicitly requested image' >> "${GITHUB_STEP_SUMMARY}"
+          elif [ "${CACHE_HIT}" = "true" ]; then
+            echo 'skip=true' >> "${GITHUB_OUTPUT}"
+            echo "already tested: \`${{ steps.image.outputs.image }}\`" >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo 'skip=false' >> "${GITHUB_OUTPUT}"
+            echo 'new image: running the compatibility suite' >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+  compat:
+    name: plugin on the released image
+    needs: resolve
+    if: needs.resolve.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      IMAGE: ghcr.io/meixu6693/dsh:${{ needs.resolve.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm test
+
+      - name: Pack the plugin under test
+        id: pack
+        run: |
+          set -euo pipefail
+          npm pack --pack-destination "${RUNNER_TEMP}" >/dev/null
+          tarball="$(ls "${RUNNER_TEMP}"/dsh-yimu-bill-*.tgz | head -1)"
+          echo "tarball=${tarball}" >> "${GITHUB_OUTPUT}"
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const p = JSON.parse(readFileSync("package.json", "utf8"));
+            console.log(`plugin ${p.version} -> ${process.env.IMAGE}`);
+          '
+
+      - name: Pull the released image
+        run: docker pull "${IMAGE}"
+
+      - name: Test the plugin inside the image
+        env:
+          PLUGIN_TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: bash scripts/test-image-compat.sh
+
+      - name: Record this image as tested
+        run: |
+          mkdir -p .ci
+          printf '%s\n' "${IMAGE}" > .ci/dsh-image-tested
+
+      - name: Remember this image as tested
+        if: needs.resolve.outputs.tested != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .ci/dsh-image-tested
+          key: dsh-image-${{ needs.resolve.outputs.image }}

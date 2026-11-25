@@ -3,3 +3,6 @@ qr/
 *.log
 *.tgz
 .DS_Store
+
+# CI 标记（image-compat / app-version 的 actions/cache 落盘）
+.ci/

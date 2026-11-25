@@ -80,3 +80,34 @@ npm test        # 二维码 PNG + 接口契约 + 控制器 + schema 清洗 + 工
 - 可选 npm：仓库 Secrets 配置 `NPM_TOKEN`（stage-only 即可）后，workflow 先安装 npm 11，再执行 `npm stage publish`；未配置则跳过。
   staged 版本需维护者在 npm 上用 2FA 批准后才公开；发布状态以 `npm view dsh-yimu-bill version` 为准。
 - CI 的 `npm pack --dry-run` 会校验 `files` 白名单，防止漏发 `lib/` 或客户端文件。
+
+## 持续集成
+
+| Workflow | 触发 | 内容 |
+|---|---|---|
+| [`test.yml`](.github/workflows/test.yml) | push / PR | Node 22/24 单测 + 打包白名单 |
+| [`release.yml`](.github/workflows/release.yml) | tag `v*.*.*` | 测试 → 版本校验 → GitHub Release → 可选 staged npm 发布 |
+| [`image-compat.yml`](.github/workflows/image-compat.yml) | 每 3 小时 / 手动 / 本文件变更 | 跟随 dsh-docker 发版，在发布镜像里做兼容测试 |
+
+### 跟随 dsh-docker 发版（镜像兼容）
+
+`image-compat.yml` 查询 [`MeiXu6693/dsh-docker`](https://github.com/MeiXu6693/dsh-docker) 的最新 Release
+（tag `dsh-v<镜像 tag>`），拉取对应镜像，用本仓库当前提交 `npm pack` 出的包做端到端验证：
+
+1. `dsh plugin --profile web add` 能装进镜像的 profile，并自动登记为 bundle；
+2. 重启容器后插件随 profile 加载，`/api/yimu-bill/status` 正常应答；
+3. `/api/yimu-bill/login/start` 能真实连到一木云端，返回 session 与二维码 PNG。
+
+同一个镜像 tag 成功测过后，后续 schedule 命中 actions/cache 标记直接跳过；失败不写标记，下一次
+schedule 自动重试。手动入口：Actions → **image-compat** → *Run workflow*（可填镜像 tag，或勾选 force 重跑）。
+它只覆盖宿主半侧；dsh-go 原生面板需要 App 环境，由 `test/plugin.test.mjs` 里的假 `dshGo` 覆盖。
+
+本地复现：
+
+```bash
+npm pack --pack-destination /tmp
+IMAGE=ghcr.io/meixu6693/dsh:<镜像 tag> PLUGIN_TARBALL=/tmp/dsh-yimu-bill-<版本>.tgz \
+  bash scripts/test-image-compat.sh
+```
+
+> 该 workflow 变绿表示「当前 HEAD 兼容新镜像」；已发布 npm 版本若仍是旧版，需要按上面的发布流程发一次版。
