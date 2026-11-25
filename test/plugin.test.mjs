@@ -1,12 +1,12 @@
 import { test } from 'node:test'
+import { readFileSync } from 'node:fs'
 import assert from 'node:assert/strict'
-import jsQR from 'jsqr'
 import * as plugin from '../plugin.mjs'
 import * as tools from '../tools.mjs'
 import * as qr from '../lib/qr.mjs'
-import { createLoginController, HttpError } from '../lib/login-controller.mjs'
-import * as native from '../lib/native.mjs'
+import { createLoginController, LoginError } from '../lib/login-controller.mjs'
 import { createNativePanel } from '../lib/native.mjs'
+import { createHandler } from '../lib/web-api.mjs'
 import { TOKEN_REF } from '../lib/constants.mjs'
 import { jwtAudience, pollScanLogin, startScanLogin } from '../lib/yimu-api.mjs'
 import {
@@ -63,6 +63,50 @@ function clock(startAt = 1_000) {
   }
 }
 
+/** 在假环境里加载 client.js，返回它在当前宿主环境注册的 slot。 */
+async function loadClientBundle({ appWebView }) {
+  const g = globalThis
+  const prevWindow = Object.prototype.hasOwnProperty.call(g, 'window') ? g.window : undefined
+  const prevDocument = Object.prototype.hasOwnProperty.call(g, 'document') ? g.document : undefined
+  const defs = []
+  const fakeWindow = {
+    __ModuleLoader__: {
+      load(def) {
+        defs.push(def)
+      },
+    },
+  }
+  if (appWebView) fakeWindow.DshGoIsland = { postMessage() {} }
+  g.window = fakeWindow
+  g.document = { head: { append() {} }, createElement: () => ({ dataset: {}, style: {}, textContent: '' }) }
+  try {
+    await import(`../client.js?test=${appWebView ? 'app' : 'browser'}`)
+    const React = { createElement: () => null, useEffect() {}, useRef: () => ({}), useState: () => [null, () => {}] }
+    const app = defs.at(-1).factory((name) => (name === 'react' ? React : undefined))
+    const registrations = []
+    app.apply({
+      effect() {
+        return () => {}
+      },
+      slots: {
+        inject(_name, callback) {
+          callback()
+        },
+        register(options, _Component) {
+          registrations.push([options.name, options.key ?? options.id])
+          return () => {}
+        },
+      },
+    })
+    return registrations
+  } finally {
+    if (prevWindow === undefined) delete g.window
+    else g.window = prevWindow
+    if (prevDocument === undefined) delete g.document
+    else g.document = prevDocument
+  }
+}
+
 /** 假响应对象。 */
 function fakeRes() {
   return {
@@ -114,40 +158,6 @@ test('模块元信息', () => {
   assert.deepEqual(plugin.inject, ['credentials', 'webServer'])
   assert.equal(tools.name, 'yimu-bill-tools')
   assert.deepEqual(tools.inject, ['tools', 'credentials'])
-})
-
-test('二维码矩阵能被 jsQR 解回原内容', () => {
-  const payload = 'login:0123456789abcdef0123456789abcdef'
-  const { size, rows } = qr.qrMatrix(payload, 4)
-  const scale = 6
-  const width = size * scale
-  const height = size * scale
-  const pixels = new Uint8ClampedArray(width * height * 4).fill(255)
-  for (let row = 0; row < size; row += 1) {
-    for (let col = 0; col < size; col += 1) {
-      if (!rows[row][col]) continue
-      for (let y = 0; y < scale; y += 1) {
-        for (let x = 0; x < scale; x += 1) {
-          const index = ((row * scale + y) * width + (col * scale + x)) * 4
-          pixels[index] = 0
-          pixels[index + 1] = 0
-          pixels[index + 2] = 0
-        }
-      }
-    }
-  }
-  const decoded = jsQR(pixels, width, height)
-  assert.ok(decoded, '二维码未被识别')
-  assert.equal(decoded.data, payload)
-})
-
-test('二维码 SVG / data URL 结构正确', () => {
-  const svg = qr.renderQrSvg('login:abc')
-  assert.match(svg, /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"/)
-  assert.match(svg, /<path /)
-  const url = qr.qrDataUrl('login:abc')
-  assert.match(url, /^data:image\/svg\+xml;base64,/)
-  assert.match(Buffer.from(url.split(',')[1], 'base64').toString('utf8'), /^<svg /)
 })
 
 test('官方扫码接口：会话创建与状态信封', async () => {
@@ -207,7 +217,7 @@ test('控制器：扫码开始 → 轮询成功写凭据', async () => {
   })
   const started = await controller.startLogin()
   assert.equal(started.sessionId, 'session-1')
-  assert.match(started.qr, /^data:image\/svg\+xml;base64,/)
+  assert.match(started.qr, /^data:image\/png;base64,/)
   assert.equal(started.expiresAt, 1_000 + 120_000)
 
   const polled = await controller.pollLogin('session-1')
@@ -412,7 +422,7 @@ test('工具半：MCP 启动失败不抛错，状态工具给出原因', async (
   for (const dispose of cleanups) dispose()
 })
 
-test('控制半 handler：路由、方法、JSON 体与错误映射', async () => {
+test('网页半侧 handler：路由、方法、JSON 体与错误映射', async () => {
   const controller = {
     status: async () => ({ configured: true }),
     startLogin: async () => ({ sessionId: 's1' }),
@@ -420,7 +430,7 @@ test('控制半 handler：路由、方法、JSON 体与错误映射', async () =
     logout: async () => ({}),
     probe: async () => ({ tools: 11 }),
   }
-  const handler = plugin.createHandler(controller)
+  const handler = createHandler(controller)
 
   const statusRes = fakeRes()
   await handler(fakeReq('GET', '/api/yimu-bill/status'), statusRes)
@@ -445,10 +455,10 @@ test('控制半 handler：路由、方法、JSON 体与错误映射', async () =
   assert.equal(badJson.status, 400)
   assert.equal(JSON.parse(badJson.body).ok, false)
 
-  const failing = plugin.createHandler({
+  const failing = createHandler({
     ...controller,
     status: async () => {
-      throw new HttpError(418, '我是茶壶')
+      throw new LoginError(418, '我是茶壶')
     },
   })
   const failingRes = fakeRes()
@@ -457,8 +467,9 @@ test('控制半 handler：路由、方法、JSON 体与错误映射', async () =
   assert.deepEqual(JSON.parse(failingRes.body), { ok: false, error: '我是茶壶' })
 })
 
-test('控制半 apply：注册 /api/yimu-bill 前缀路由', () => {
+test('控制半 apply：注册网页路由；无 dshGo 时不注册原生面板、不报错', () => {
   const routes = []
+  const injected = []
   const ctx = {
     credentials: fakeCredentials(),
     webServer: {
@@ -467,13 +478,18 @@ test('控制半 apply：注册 /api/yimu-bill 前缀路由', () => {
         return () => {}
       },
     },
+    inject(deps) {
+      injected.push(deps)
+      return () => {}
+    },
     effect(fn) {
       fn()
       return () => {}
     },
     logger: { warn() {} },
   }
-  plugin.apply(ctx, {})
+  assert.doesNotThrow(() => plugin.apply(ctx, {}))
+  assert.deepEqual(injected, [['dshGo']])
   assert.equal(routes.length, 1)
   assert.equal(routes[0].kind, 'prefix')
   assert.equal(routes[0].path, '/api/yimu-bill')
@@ -533,14 +549,7 @@ test('原生面板：未登录出二维码，扫码成功后自动显示已登�
   cleanup()
 })
 
-test('原生面板：apply 在无 dshGo 时不报错，有 dshGo 时注册 yimu-login', () => {
-  const noDshGo = {
-    credentials: fakeCredentials(),
-    inject() {},
-    effect() {},
-  }
-  assert.doesNotThrow(() => native.apply(noDshGo))
-
+test('原生面板：控制半在有 dshGo 时注册 yimu-login（从主入口注册，避免子路径行被桥接丢弃）', () => {
   const panels = new Map()
   const dshGo = {
     panel(id, definition) {
@@ -548,23 +557,56 @@ test('原生面板：apply 在无 dshGo 时不报错，有 dshGo 时注册 yimu-
       return () => {}
     },
   }
-  const withDshGo = {
+  const ctx = {
     credentials: fakeCredentials(),
+    webServer: {
+      register() {
+        return () => {}
+      },
+    },
     inject(deps, callback) {
       assert.deepEqual(deps, ['dshGo'])
-      callback({
-        dshGo,
-        effect(fn) {
-          fn()
-          return () => {}
-        },
-      })
+      callback({ dshGo })
+      return () => {}
     },
-    effect() {},
+    effect(fn) {
+      fn()
+      return () => {}
+    },
+    logger: { warn() {} },
   }
-  native.apply(withDshGo)
+  plugin.apply(ctx, {})
   assert.ok(panels.has('yimu-login'))
   assert.equal(typeof panels.get('yimu-login').view, 'function')
   assert.equal(typeof panels.get('yimu-login').data, 'function')
   assert.equal(typeof panels.get('yimu-login').actions.refresh, 'function')
+})
+
+test('网页入口：浏览器里注册「设置 → 一木记账」和插件详情页两处', async () => {
+  const registrations = await loadClientBundle({ appWebView: false })
+  assert.deepEqual(registrations, [
+    ['settings.section', 'yimu-bill'],
+    ['plugins.bundle.config', 'dsh-yimu-bill'],
+  ])
+})
+
+test('网页入口：dsh-go App 网页岛里隐藏「设置 → 一木记账」，只留插件详情页', async () => {
+  const registrations = await loadClientBundle({ appWebView: true })
+  assert.deepEqual(registrations, [['plugins.bundle.config', 'dsh-yimu-bill']])
+})
+
+test('入口收敛：App 只有插件详情页一个原生面板，网页版保留设置入口', () => {
+  const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+  const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  assert.doesNotMatch(patch, /dsh-yimu-bill\/native/)
+  assert.doesNotMatch(patch, /yimu-bill-native/)
+  const panel = manifest.dshGo?.contributes?.panels?.find((item) => item.id === 'yimu-login')
+  assert.ok(panel)
+  // App：只放插件详情页（设置 → 插件 → 一木记账），不再出现在对话详情 / 全部功能。
+  assert.deepEqual(panel.placement, ['plugin'])
+  // 网页半侧：设置首页入口 + 插件详情页配置区两个 slot，App 里隐藏设置首页那个。
+  assert.deepEqual(manifest.dsh?.client?.inject, [
+    '@deepseek-ai/dsh-client-ui-settings',
+    '@deepseek-ai/dsh-client-ui-plugin-manager',
+  ])
 })

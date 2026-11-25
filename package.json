@@ -1,8 +1,8 @@
 {
   "name": "dsh-yimu-bill",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "type": "module",
-  "description": "DSH 插件：一木记账 GUI 扫码登录 + 「记账模式」预设 + 私有托管的 yimu-bill-cloud-mcp 兼容层",
+  "description": "一木记账：扫码登录 +「记账模式」。入口：dsh-go App 设置 → 插件 → 一木记账；网页版 设置 → 一木记账。",
   "author": "MeiXu6693",
   "keywords": [
     "dsh",
@@ -24,10 +24,9 @@
   "exports": {
     ".": "./plugin.mjs",
     "./tools": "./tools.mjs",
-    "./client": "./client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json",
-    "./native": "./lib/native.mjs"
+    "./client": "./client.js"
   },
   "files": [
     "plugin.mjs",
@@ -50,17 +49,14 @@
     "client": {
       "platform": "web",
       "inject": [
-        "@deepseek-ai/dsh-client-ui-settings"
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
       ]
     }
   },
   "dependencies": {
     "qrcode": "^1.5.4",
-    "qrcode-generator": "^1.4.4",
     "yimu-bill-cloud-mcp": "^0.2.0"
-  },
-  "devDependencies": {
-    "jsqr": "^1.4.0"
   },
   "license": "MIT",
   "engines": {
@@ -87,8 +83,7 @@
           },
           "icon": "qr",
           "placement": [
-            "features",
-            "session.tab"
+            "plugin"
           ]
         }
       ]

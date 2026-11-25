@@ -1,8 +1,12 @@
 /**
- * dsh-yimu-bill — 浏览器半侧。
+ * dsh-yimu-bill — 网页半侧（DSH Web / 桌面端）。
  *
- * 在 DSH 设置里注册「一木记账」页：登录状态、扫码登录（页面内二维码 + 轮询）、
- * 退出登录、测试连接，以及「记账模式」的说明。
+ * 把「一木记账」登录页注册到两个位置，共用同一个组件、同一个登录控制器：
+ *   1. `settings.section`：设置 → 一木记账（明显入口；dsh-go App 里
+ *      App 会自动生成一个「网页版」设置入口，打开的是网页岛）；
+ *   2. `plugins.bundle.config`：设置 → 插件 → dsh-yimu-bill 的配置区。
+ * 原生面板（设置 → 插件 → 一木记账）由宿主半侧注册给 dsh-go App，两边共享
+ * 同一份 DSH 凭据，登录状态一致。
  *
  * 这是 DSH 的 static client bundle 格式（window.__ModuleLoader__.load），
  * 不打包 React、不 import 任何 DSH 包；所有宿主交互走同源 HTTP API。
@@ -14,6 +18,14 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const h = React.createElement
     const { useEffect, useRef, useState } = React
+
+    // dsh-go App 的网页岛会注入 DshGoIsland 通道；App 里用原生面板
+    // （设置 → 插件 → 一木记账），不再往 App 的设置首页塞一个只能当网页岛打开的
+    // 网页设置页（App 无法把网页分区直接画成原生页面，会出现打不开的入口）。
+    // 桌面 / 普通手机浏览器里保留 settings.section，设置首页就有明显的「一木记账」入口。
+    const inDshGoApp =
+      (typeof window === 'object' && window !== null && 'DshGoIsland' in window) ||
+      /;\s*wv[);]/i.test(typeof navigator === 'undefined' ? '' : String(navigator.userAgent || ''))
 
     /** 宿主路由前缀。 */
     const API = '/api/yimu-bill'
@@ -327,12 +339,22 @@ window.__ModuleLoader__.load({
         style.textContent = CSS
         document.head.append(style)
         ctx.effect(() => () => style.remove(), 'yimu-bill: settings styles')
-        ctx.slots.inject('settings.section', function* register() {
-          yield ctx.slots.register(
-            { name: 'settings.section', id: 'yimu-bill', order: 27, label: '一木记账' },
-            YimuSettings,
+        // 1) 设置 → 一木记账：只在浏览器里注册（App 里隐藏，App 用原生面板）。
+        if (!inDshGoApp) {
+          ctx.slots.inject('settings.section', () =>
+            ctx.slots.register(
+              { name: 'settings.section', id: 'yimu-bill', order: 27, label: '一木记账' },
+              YimuSettings,
+            ),
           )
-        })
+        }
+        // 2) 设置 → 插件 → dsh-yimu-bill：插件详情页的配置区（网页版）。
+        ctx.slots.inject('plugins.bundle.config', () =>
+          ctx.slots.register(
+            { name: 'plugins.bundle.config', key: 'dsh-yimu-bill' },
+            YimuSettings,
+          ),
+        )
       },
     }
 
