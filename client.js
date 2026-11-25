@@ -188,6 +188,10 @@ window.__ModuleLoader__.load({
       }
 
       const logout = async () => {
+        if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
+          const confirmed = window.confirm('退出登录会删除本机凭据；一木记账服务端 token 不会失效。继续退出？')
+          if (!confirmed) return
+        }
         setError('')
         setNotice('')
         setPhase('idle')

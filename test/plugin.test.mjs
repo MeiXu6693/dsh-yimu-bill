@@ -580,13 +580,84 @@ test('原生面板：未登录出二维码，扫码成功后自动显示已登�
   assert.deepEqual(view.children[1].src, { $: 'data.qr' })
   assert.ok(states.some((state) => String(state.qr).startsWith('data:image/png;base64,')))
   assert.match(states.at(-1).statusText, /已登录（userId u1）/)
+  assert.match(states.at(-1).hint, /已登录/)
+  assert.equal(states.at(-1).alt, '已登录')
 
   const refresh = await panel.actions.refresh().result()
   assert.match(refresh.patch.qr, /^data:image\/png;base64,/)
   const tested = await panel.actions.test().result()
   assert.match(tested.toast, /11 个工具/)
+  panel.actions.logout()
   const logout = await panel.actions.logout().result()
   assert.equal(logout.patch.statusText, '已退出登录')
+  cleanup()
+})
+
+test('原生面板：已登录提示与两步退出确认', async () => {
+  let logoutCalls = 0
+  const controller = {
+    async status() {
+      return { configured: true, userId: 'u1' }
+    },
+    async startLogin() {
+      return { sessionId: 's1' }
+    },
+    async pollLogin() {
+      return { state: 'pending' }
+    },
+    async logout() {
+      logoutCalls += 1
+      return {}
+    },
+    async probe() {
+      return { tools: 11 }
+    },
+  }
+  const panel = createNativePanel(controller, {
+    qrPng: async () => 'data:image/png;base64,AAAA',
+    intervalMs: 1_000,
+  })
+  const states = []
+  const cleanup = panel.data({}, (data) => states.push(data), { locale: 'zh' })
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.match(states.at(-1).hint, /已登录/)
+  assert.equal(states.at(-1).alt, '已登录')
+  const first = panel.actions.logout()
+  assert.match(first.toast, /再点一次/)
+  assert.equal(logoutCalls, 0)
+  const second = await panel.actions.logout().result()
+  assert.equal(logoutCalls, 1)
+  assert.match(second.patch.hint, /已退出登录/)
+  cleanup()
+})
+
+test('原生面板：二维码过期后提示刷新', async () => {
+  const controller = {
+    async status() {
+      return { configured: false }
+    },
+    async startLogin() {
+      return { sessionId: 's1' }
+    },
+    async pollLogin() {
+      return { state: 'expired' }
+    },
+    async logout() {
+      return {}
+    },
+    async probe() {
+      return { tools: 11 }
+    },
+  }
+  const panel = createNativePanel(controller, {
+    qrPng: async () => 'data:image/png;base64,AAAA',
+    intervalMs: 5,
+  })
+  const states = []
+  const cleanup = panel.data({}, (data) => states.push(data), { locale: 'zh' })
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  assert.match(states.at(-1).hint, /过期/)
+  assert.equal(states.at(-1).alt, '二维码已过期')
   cleanup()
 })
 

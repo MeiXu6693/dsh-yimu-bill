@@ -1,6 +1,6 @@
 {
   "name": "dsh-yimu-bill",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "type": "module",
   "description": "一木记账：扫码登录 +「记账模式」。入口：dsh-go App 设置 → 插件 → 一木记账；网页版 设置 → 一木记账。",
   "author": "MeiXu6693",
@@ -36,6 +36,7 @@
     "client.js",
     "cordis.patch.yml",
     "README.md",
+    "DEVELOPMENT.md",
     "LICENSE",
     "preset.example.yml"
   ],
